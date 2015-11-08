@@ -34,7 +34,7 @@ import urllib2
 import urlparse
 
 
-__version__ = '0.4.0'
+__version__ = '0.4.2'
 
 
 # Disable some pylint warnings
@@ -48,6 +48,7 @@ BLANK = ' '
 COMMA = ','
 COMMA_BLANK = COMMA + BLANK
 COMMENT_SIGN = '#'
+DASH = '-'
 EMPTY = ''
 FIRST_INDEX = 0
 LAST_INDEX = -1
@@ -67,12 +68,12 @@ FS_CALCULATED_DIGEST = '{checksum_type} checksum: {hexdigest}'
 FS_HOURS = '{0}h'
 FS_MESSAGE = '%(levelname)-8s | %(message)s'
 FS_MINUTES = '{0}m'
-FS_PROGRESS_BAR = ('[{bar_complete}{bar_remaining}]'
-                   ' {percent_complete:5.1f}% complete'
+FS_PROGRESS_BAR = ('PROGRESS | {bar_complete}{bar_remaining}'
+                   ' | {percent_complete:5.1f}% complete'
                    ' | elapsed: {elapsed_time}'
                    ' | remaining: {estimated_time_remaining}'
                    '       \r')
-FS_PROGRESS_SIMPLE = ('{received_bytes} bytes received,'
+FS_PROGRESS_SIMPLE = ('PROGRESS | {received_bytes} bytes received,'
                       ' elapsed time: {elapsed_time}\r')
 FS_REPR = '{0}({1})'
 FS_SECONDS = '{0:3.1f}s'
@@ -89,7 +90,8 @@ MODE_WRITE = 'w'
 MODE_WRITE_BINARY = 'wb'
 
 MSG_DOWNLOADING = 'Downloading {0!r} ...'
-MSG_DOWNLOAD_COMPLETE = 'Downloaded {0} bytes in {1}'
+MSG_DOWNLOAD_COMPLETE = 'Received {0} bytes in {1}'
+MSG_SAVED_TO = 'Saved {0} bytes to {1!r}'
 MSG_SCRIPT_FINISHED = 'Script finished. Returncode: {0}'
 
 RC_ERROR = 1
@@ -210,7 +212,7 @@ def download_chunks(http_response,
     try:
         total_bytes = \
             int(http_response.info().getheader('Content-Length').strip())
-    except (KeyError, ValueError):
+    except (AttributeError, ValueError):
         total_bytes = None
         chunk_size = MINIMUM_CHUNK_SIZE
     else:
@@ -235,8 +237,8 @@ def download_chunks(http_response,
         else:
             saved_content.append(chunk)
         # display progress
+        received_bytes = received_bytes + len(chunk)
         if show_progress:
-            received_bytes = received_bytes + len(chunk)
             display_progress(received_bytes,
                              start_time,
                              stream=sys.stderr,
@@ -248,10 +250,11 @@ def download_chunks(http_response,
     if show_progress:
         sys.stderr.write(NEWLINE)
     logging.debug(
-        MSG_DOWNLOAD_COMPLETE.format(total_bytes,
+        MSG_DOWNLOAD_COMPLETE.format(received_bytes,
                                      format_duration(elapsed_time)))
     return SimpleNamespace(checksums=checksums,
                            content=EMPTY.join(saved_content),
+                           received_bytes=received_bytes,
                            returncode=RC_OK)
 
 
@@ -299,6 +302,9 @@ def save_to_file(url,
     """Download in chunks, show progress, calculate checksums,
     and save to the target directory.
     """
+    # output file name '-' => direct output to stdout
+    if output_file_name == DASH:
+        return display_directly(url)
     checksums = {}
     if calculate_checksums:
         for checksum_type in calculate_checksums:
@@ -326,6 +332,8 @@ def save_to_file(url,
                                  checksums=checksums,
                                  output_file=output_file,
                                  show_progress=show_progress)
+    logging.debug(MSG_SAVED_TO.format(result.received_bytes,
+                                      output_file_path))
     return result
 
 
@@ -376,6 +384,8 @@ def main(command_line_options):
                 os.path.split(options.output_path)
             #
         #
+    else:
+        output_directory = None
     #
     download_result = save_to_file(
         arguments[FIRST_INDEX],
