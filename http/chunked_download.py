@@ -29,10 +29,11 @@ import logging
 import optparse
 import re
 import sys
+import timeit
 import urllib2
 
 
-__version__ = '0.0.1'
+__version__ = '0.1.0'
 
 
 BLANK = ' '
@@ -45,6 +46,16 @@ UNDERLINE = '_'
 FIRST_INDEX = 0
 
 FS_MESSAGE = '%(levelname)-8s | %(message)s'
+FS_PROGRESS_BAR = (r'[{bar_complete}{bar_remaining}]'
+                   r' {percent_complete:5.1f}% complete'
+                   r' | elapsed: {elapsed_time}'
+                   r' | remaining: {estimated_time_remaining}\r')
+FS_PROGRESS_SIMPLE = (r'{received_bytes} bytes received,'
+                      r' elapsed time: {elapsed_time}\r')
+
+# Progress bar items
+ITEM_COMPLETE = '#'
+ITEM_REMAINING = '-'
 
 KEY_PARAMETER = 'parameter'
 KEY_VALUE = 'value'
@@ -59,6 +70,79 @@ RC_OK = 0
 #
 # Function definitions
 #
+
+
+def show_progress(received_bytes,
+                  start_time,
+                  bar_width=20,
+                  stream=sys.stderr,
+                  total_bytes=None):
+    """Show progress.
+    If total_bytes was provided, show a progress bar of the specified
+    width in characters, with a percentage display and the elapsed and
+    estimated remaining times.
+    Else, just display the number of received bytes and the elapsed time.
+    """
+    elapsed_time = timeit.default_timer() - start_time
+    if total_bytes:
+        ratio_complete = float(received_bytes) / total_bytes
+        estimated_time_remaining = \
+            (1.0 - ratio_complete) / ratio_complete * elapsed_time
+        bar_items_complete = int(ratio_complete * bar_width)
+        bar_items_remaining = bar_width - bar_items_complete
+        stream.write(FS_PROGRESS_BAR.format(
+            bar_complete=bar_items_complete * ITEM_COMPLETE,
+            bar_remaining=bar_items_remaining * ITEM_REMAINING,
+            percent_complete=100 * ratio_complete,
+            elapsed_time=time_display(elapsed_time),
+            estimated_time_remaining=time_display(estimated_time_remaining))
+    else:
+        stream.write(FS_PROGRESS_SIMPLE.format(
+            received_bytes=received_bytes,
+            elapsed_time=time_display(elapsed_time)))
+    #
+    stream.flush()
+
+
+def get_chunks(file_object, chunk_size=MINIMUM_CHUNK_SIZE):
+    """Generator function yielding chunks of the specified size
+    from the given file-like object (isable with a HTTP response).
+    """
+    chunk = file_object.read(chunk_size)
+    while chunk:
+        yield chunk
+        chunk = file_object.read(chunk_size)
+    #
+
+
+def download_in_chunks(url,
+                       calculate_checksums=None,
+                       minimum_chunk_size=MINIMUM_CHUNK_SIZE,
+                       maximum_chunks_number=MAXIMUM_CHUNKS_NUMBER,
+                       target_directory=None,
+                       target_file_name=None)
+    """Download in chunks, show progress, calculate checksums,
+    and save to the target directory
+    """
+    http_response = urllib2.open(url)
+    try:
+        total_bytes = ...
+        chunk_size = \
+            int(math.round(float(total_bytes) / maximum_chunks_number))
+        if chunk_size < minimum_chunk_size:
+            chunk_size = minimum_chunk_size
+        #
+    except (KeyError, ValueError):
+        total_bytes = None
+        chunk_size = minimum_chunk_size
+    #
+    start_time = timeit.default_timer()
+    for chunk in get_chunks(http_response, chunk_size=chunk_size):
+        # calculate checksums
+        # write to target file
+        # display progress
+        pass
+    sys.stderr.write(NEWLINE)
 
 
 def get_command_line_options():
