@@ -34,8 +34,15 @@ import urllib2
 import urlparse
 
 
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 
+
+# Disable some pylint warnings
+# pylint: disable=logging-format-interpolation
+
+#
+# Standard constants
+#
 
 BLANK = ' '
 COMMA = ','
@@ -48,6 +55,10 @@ NEWLINE = '\n'
 SLASH = '/'
 UNDERLINE = '_'
 ZERO = 0
+
+#
+# Module specific constants
+#
 
 DEFAULT_SHOW_PROGRESS = False
 
@@ -180,21 +191,9 @@ def display_progress(received_bytes,
     stream.flush()
 
 
-def get_chunks(file_object, chunk_size=MINIMUM_CHUNK_SIZE):
-    """Generator function yielding chunks of the specified size
-    from the given file-like object (usable with a HTTP response).
-    """
-    chunk = file_object.read(chunk_size)
-    while chunk:
-        yield chunk
-        chunk = file_object.read(chunk_size)
-    #
-
-
 def download_chunks(http_response,
                     checksums=None,
-                    minimum_chunk_size=MINIMUM_CHUNK_SIZE,
-                    maximum_chunks_number=MAXIMUM_CHUNKS_NUMBER,
+                    chunk_size=None,
                     output_file=None,
                     show_progress=DEFAULT_SHOW_PROGRESS):
     """Download chunks from the given HTTP response,
@@ -211,14 +210,16 @@ def download_chunks(http_response,
     try:
         total_bytes = \
             int(http_response.info().getheader('Content-Length').strip())
-        chunk_size = \
-            int(round(float(total_bytes) / maximum_chunks_number))
-        if chunk_size < minimum_chunk_size:
-            chunk_size = minimum_chunk_size
-        #
     except (KeyError, ValueError):
         total_bytes = None
-        chunk_size = minimum_chunk_size
+        chunk_size = MINIMUM_CHUNK_SIZE
+    else:
+        if chunk_size is None:
+            chunk_size = \
+                int(round(float(total_bytes) / MAXIMUM_CHUNKS_NUMBER))
+        if chunk_size < MINIMUM_CHUNK_SIZE:
+            chunk_size = MINIMUM_CHUNK_SIZE
+        #
     #
     start_time = timeit.default_timer()
     received_bytes = ZERO
