@@ -23,6 +23,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import collections
 import hashlib
 import logging
 import optparse
@@ -33,7 +34,7 @@ import urllib2
 import urlparse
 
 
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 
 
 BLANK = ' '
@@ -41,31 +42,33 @@ COMMA = ','
 COMMA_BLANK = COMMA + BLANK
 COMMENT_SIGN = '#'
 EMPTY = ''
+FIRST_INDEX = 0
+LAST_INDEX = -1
 NEWLINE = '\n'
 SLASH = '/'
 UNDERLINE = '_'
-
 ZERO = 0
 
-FIRST_INDEX = 0
-LAST_INDEX = -1
+DEFAULT_SHOW_PROGRESS = False
 
+FS_ATTRIBUTE_ERROR = '{0!r} object has no attribute {1!r}'
+FS_CALCULATED_DIGEST = '{checksum_type} checksum: {hexdigest}'
+FS_HOURS = '{0}h'
 FS_MESSAGE = '%(levelname)-8s | %(message)s'
+FS_MINUTES = '{0}m'
 FS_PROGRESS_BAR = ('[{bar_complete}{bar_remaining}]'
                    ' {percent_complete:5.1f}% complete'
                    ' | elapsed: {elapsed_time}'
-                   ' | remaining: {estimated_time_remaining}\r')
+                   ' | remaining: {estimated_time_remaining}'
+                   '       \r')
 FS_PROGRESS_SIMPLE = ('{received_bytes} bytes received,'
                       ' elapsed time: {elapsed_time}\r')
-FS_TIME_DISPLAY = '{minutes:d}:{seconds:06.3f}'
-
+FS_REPR = '{0}({1})'
+FS_SECONDS = '{0:3.1f}s'
 
 # Progress bar items
 ITEM_COMPLETE = '#'
 ITEM_REMAINING = '-'
-
-KEY_PARAMETER = 'parameter'
-KEY_VALUE = 'value'
 
 MAXIMUM_CHUNKS_NUMBER = 10000
 MINIMUM_CHUNK_SIZE = 2**16
@@ -74,7 +77,8 @@ MODE_READ = 'r'
 MODE_WRITE = 'w'
 MODE_WRITE_BINARY = 'wb'
 
-MSG_DOWNLOAD_COMPLETE = 'Download complete.'
+MSG_DOWNLOADING = 'Downloading {0!r} ...'
+MSG_DOWNLOAD_COMPLETE = 'Downloaded {0} bytes in {1}'
 MSG_SCRIPT_FINISHED = 'Script finished. Returncode: {0}'
 
 RC_ERROR = 1
@@ -82,24 +86,74 @@ RC_OK = 0
 
 
 #
+# Class definitions
+#
+
+
+class SimpleNamespace(dict):
+
+    """A dict subclass that exposes its items as attributes."""
+
+    def __init__(self, mapping_=None, **kwargs):
+        """Initialize like a dict"""
+        super(SimpleNamespace, self).__init__(mapping_ or kwargs)
+
+    def __dir__(self):
+        """Return a list of the member names"""
+        return list(self)
+
+    def __repr__(self):
+        """Object representation"""
+        return FS_REPR.format(type(self).__name__,
+                              super(SimpleNamespace, self).__repr__())
+
+    def __getattribute__(self, name):
+        """Return an existing dict member"""
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(
+                FS_ATTRIBUTE_ERROR.format(type(self).__name__, name))
+        #
+
+    def __setattr__(self, name, value):
+        """Set an attribute"""
+        self[name] = value
+
+    def __delattr__(self, name):
+        """Delete an attribute"""
+        del self[name]
+
+
+#
 # Function definitions
 #
 
 
-def time_display(total_seconds):
-    """Display time in seconds as MM:SS.usec"""
-    minutes, seconds = divmod(total_seconds, 60)
-    return FS_TIME_DISPLAY.format(minutes=int(minutes),
-                                  seconds=seconds)
+def format_duration(total_seconds):
+    """Return a duration formatted like
+    '[[<hours>h ]<minutes>m ]<seconds>s'
+    """
+    duration_display = collections.deque()
+    total_minutes, seconds = divmod(total_seconds, 60)
+    duration_display.appendleft(FS_SECONDS.format(seconds))
+    if total_minutes:
+        hours, minutes = divmod(int(total_minutes), 60)
+        duration_display.appendleft(FS_MINUTES.format(minutes))
+        if hours:
+            duration_display.appendleft(FS_HOURS.format(hours))
+        #
+    #
+    return BLANK.join(duration_display)
 
 
-def show_progress(received_bytes,
-                  start_time,
-                  bar_width=20,
-                  stream=sys.stderr,
-                  total_bytes=None):
-    """Show progress.
-    If total_bytes was provided, show a progress bar of the specified
+def display_progress(received_bytes,
+                     start_time,
+                     bar_width=20,
+                     stream=sys.stderr,
+                     total_bytes=None):
+    """Display progress.
+    If total_bytes was provided, display a progress bar of the specified
     width in characters, with a percentage display and the elapsed and
     estimated remaining times.
     Else, just display the number of received bytes and the elapsed time.
@@ -115,19 +169,20 @@ def show_progress(received_bytes,
             bar_complete=bar_items_complete * ITEM_COMPLETE,
             bar_remaining=bar_items_remaining * ITEM_REMAINING,
             percent_complete=100 * ratio_complete,
-            elapsed_time=time_display(elapsed_time),
-            estimated_time_remaining=time_display(estimated_time_remaining)))
+            elapsed_time=format_duration(elapsed_time),
+            estimated_time_remaining=\
+                format_duration(estimated_time_remaining)))
     else:
         stream.write(FS_PROGRESS_SIMPLE.format(
             received_bytes=received_bytes,
-            elapsed_time=time_display(elapsed_time)))
+            elapsed_time=format_duration(elapsed_time)))
     #
     stream.flush()
 
 
 def get_chunks(file_object, chunk_size=MINIMUM_CHUNK_SIZE):
     """Generator function yielding chunks of the specified size
-    from the given file-like object (isable with a HTTP response).
+    from the given file-like object (usable with a HTTP response).
     """
     chunk = file_object.read(chunk_size)
     while chunk:
@@ -136,38 +191,23 @@ def get_chunks(file_object, chunk_size=MINIMUM_CHUNK_SIZE):
     #
 
 
-def download_in_chunks(url,
-                       calculate_checksums=None,
-                       display_progress=True,
-                       minimum_chunk_size=MINIMUM_CHUNK_SIZE,
-                       maximum_chunks_number=MAXIMUM_CHUNKS_NUMBER,
-                       target_directory=None,
-                       target_file_name=None):
-    """Download in chunks, show progress, calculate checksums,
-    and save to the target directory.
+def download_chunks(http_response,
+                    checksums=None,
+                    minimum_chunk_size=MINIMUM_CHUNK_SIZE,
+                    maximum_chunks_number=MAXIMUM_CHUNKS_NUMBER,
+                    output_file=None,
+                    show_progress=DEFAULT_SHOW_PROGRESS):
+    """Download chunks from the given HTTP response,
+    feed all hash objects given in the checksums dict with the data
+    (i.e. calculate the checksums gradually), show progress if specified,
+    write the chunks to the file if a file handle was given.
+    Return a result namespace with a 'checksums' attribute
+    and an additional 'content' attribute if no output file was given.
     Modified from <http://stackoverflow.com/a/2030027>
     """
-    checksums = {}
-    if calculate_checksums:
-        for checksum_type in calculate_checksums:
-            try:
-                checksums[checksum_type] = hashlib.new(checksum_type)
-            except ValueError as value_error:
-                logging.warn(value_error)
-            #
-        #
-    #
-    if not target_directory:
-        target_directory = os.getcwd()
-    if not target_file_name:
-        target_path = urlparse.urlparse(url).path
-        target_file_name = target_path.split(SLASH)[LAST_INDEX]
-    if not target_file_name:
-        # URL path ends in a slash
-        target_file_name = 'index.html'
-    target_file_path = os.path.join(target_directory, target_file_name)
-    #
-    http_response = urllib2.urlopen(url)
+    if not checksums:
+        checksums = {}
+    saved_content = []
     try:
         total_bytes = \
             int(http_response.info().getheader('Content-Length').strip())
@@ -182,24 +222,110 @@ def download_in_chunks(url,
     #
     start_time = timeit.default_timer()
     received_bytes = ZERO
-    with open(target_file_path, MODE_WRITE_BINARY) as target_file:
-        for chunk in get_chunks(http_response, chunk_size=chunk_size):
-            # calculate checksums
-            for single_checksum in checksums.values():
-                single_checksum.update(chunk)
-            # write to target file
-            target_file.write(chunk)
-            # display progress
-            if display_progress:
-                received_bytes = received_bytes + len(chunk)
-                show_progress(received_bytes,
-                              start_time,
-                              total_bytes=total_bytes)
+    # read first chunk
+    chunk = http_response.read(chunk_size)
+    while chunk:
+        # calculate checksums
+        for single_checksum in checksums.values():
+            single_checksum.update(chunk)
+        # write to output file
+        if output_file:
+            output_file.write(chunk)
+        else:
+            saved_content.append(chunk)
+        # display progress
+        if show_progress:
+            received_bytes = received_bytes + len(chunk)
+            display_progress(received_bytes,
+                             start_time,
+                             stream=sys.stderr,
+                             total_bytes=total_bytes)
+        # read next chunk
+        chunk = http_response.read(chunk_size)
+    #
+    elapsed_time = timeit.default_timer() - start_time
+    if show_progress:
+        sys.stderr.write(NEWLINE)
+    logging.debug(
+        MSG_DOWNLOAD_COMPLETE.format(total_bytes,
+                                     format_duration(elapsed_time)))
+    return SimpleNamespace(checksums=checksums,
+                           content=EMPTY.join(saved_content),
+                           returncode=RC_OK)
+
+
+def display_directly(url):
+    """Download in chunks and display directly."""
+    logging.debug(MSG_DOWNLOADING.format(url))
+    http_response = urllib2.urlopen(url)
+    result = download_chunks(http_response,
+                             output_file=sys.stdout,
+                             show_progress=False)
+    sys.stdout.flush()
+    return result
+
+
+def get_content(url,
+                calculate_checksums=None,
+                show_progress=DEFAULT_SHOW_PROGRESS):
+    """Download in chunks, show progress, calculate checksums,
+    and return the content.
+    """
+    checksums = {}
+    if calculate_checksums:
+        for checksum_type in calculate_checksums:
+            try:
+                checksums[checksum_type] = hashlib.new(checksum_type)
+            except ValueError as value_error:
+                logging.warn(value_error)
             #
         #
-    sys.stderr.write(NEWLINE)
-    logging.debug(MSG_DOWNLOAD_COMPLETE)
-    return checksums
+    #
+    logging.debug(MSG_DOWNLOADING.format(url))
+    http_response = urllib2.urlopen(url)
+    return download_chunks(http_response,
+                           checksums=checksums,
+                           output_file=None,
+                           show_progress=show_progress)
+    #
+
+
+def save_to_file(url,
+                 calculate_checksums=None,
+                 output_directory=None,
+                 output_file_name=None,
+                 show_progress=DEFAULT_SHOW_PROGRESS):
+    """Download in chunks, show progress, calculate checksums,
+    and save to the target directory.
+    """
+    checksums = {}
+    if calculate_checksums:
+        for checksum_type in calculate_checksums:
+            try:
+                checksums[checksum_type] = hashlib.new(checksum_type)
+            except ValueError as value_error:
+                logging.warn(value_error)
+            #
+        #
+    #
+    if not output_directory:
+        output_directory = os.getcwd()
+    if not output_file_name:
+        output_path = urlparse.urlparse(url).path
+        output_file_name = output_path.split(SLASH)[LAST_INDEX]
+    if not output_file_name:
+        # URL path ends in a slash
+        output_file_name = 'index.html'
+    output_file_path = os.path.join(output_directory, output_file_name)
+    #
+    logging.debug(MSG_DOWNLOADING.format(url))
+    http_response = urllib2.urlopen(url)
+    with open(output_file_path, MODE_WRITE_BINARY) as output_file:
+        result = download_chunks(http_response,
+                                 checksums=checksums,
+                                 output_file=output_file,
+                                 show_progress=show_progress)
+    return result
 
 
 def get_command_line_options():
@@ -209,21 +335,28 @@ def get_command_line_options():
                      ' and calculate checksums.'),
         version=__version__)
     option_parser.set_defaults(calculate_checksums=[],
+                               output_path=None,
+                               show_progress=DEFAULT_SHOW_PROGRESS,
                                verbose=False)
     option_parser.add_option('-c', '--checksum', '--calculate-checksum',
                              action='append',
                              dest='calculate_checksums',
                              metavar='CHECKSUM',
-                             help='Caclulate the given checksums'
-                             ' (may be specified more than once).')
+                             help='calculate the given checksum types'
+                             ' (may be specified multiple times'
+                             ' for calculating multiple digests).')
     option_parser.add_option('-o', '--output',
                              action='store',
-                             dest='target_path',
-                             help='Output to TARGET_PATH.')
+                             dest='output_path',
+                             help='output to OUTPUT_PATH.')
+    option_parser.add_option('-p', '--progress', '--show_progress',
+                             action='store_true',
+                             dest='show_progress',
+                             help='show progress while downloading.')
     option_parser.add_option('-v', '--verbose',
                              action='store_true',
                              dest='verbose',
-                             help='Print debugging messages')
+                             help='print debugging messages.')
     return option_parser.parse_args()
 
 
@@ -233,27 +366,28 @@ def main(command_line_options):
     if not options.verbose:
         logging.getLogger(None).setLevel(logging.INFO)
     #
-    target_file_name = None
-    if options.target_path:
-        if os.path.isdir(options.target_path):
-            target_directory = options.target_path
+    output_file_name = None
+    if options.output_path:
+        if os.path.isdir(options.output_path):
+            output_directory = options.output_path
         else:
-            target_directory, target_file_name = \
-                os.path.split(options.target_path)
+            output_directory, output_file_name = \
+                os.path.split(options.output_path)
             #
         #
     #
-    checksums = download_in_chunks(
+    download_result = save_to_file(
         arguments[FIRST_INDEX],
         calculate_checksums=options.calculate_checksums,
-        target_directory=target_directory,
-        target_file_name=target_file_name)
+        output_directory=output_directory,
+        output_file_name=output_file_name,
+        show_progress=options.show_progress)
     #
-    for checksum_type, single_checksum in checksums.items():
-        logging.info('{checksum_type} checksum: {hexdigest}'.format(
+    for checksum_type, single_checksum in download_result.checksums.items():
+        logging.info(FS_CALCULATED_DIGEST.format(
             checksum_type=checksum_type.upper(),
             hexdigest=single_checksum.hexdigest()))
-    return RC_OK
+    return download_result.returncode
 
 
 #
