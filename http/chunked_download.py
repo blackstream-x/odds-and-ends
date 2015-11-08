@@ -63,6 +63,8 @@ ZERO = 0
 
 DEFAULT_SHOW_PROGRESS = False
 
+DIRECTORY_INDEX = 'index.html'
+
 FS_ATTRIBUTE_ERROR = '{0!r} object has no attribute {1!r}'
 FS_CALCULATED_DIGEST = '{checksum_type} checksum: {hexdigest}'
 FS_HOURS = '{0}h'
@@ -269,22 +271,31 @@ def display_directly(url):
     return result
 
 
+def get_checksums_mapping(checksums_list):
+    """Return a mapping of hash objects from the given
+    checksum types list
+    """
+    checksums_mapping = {}
+    if checksums_list:
+        for checksum_type in checksums_list:
+            try:
+                checksums_mapping[checksum_type.upper()] = \
+                    hashlib.new(checksum_type.lower())
+            except ValueError as value_error:
+                logging.warn(value_error)
+            #
+        #
+    #
+    return checksums_mapping
+
+
 def get_content(url,
                 calculate_checksums=None,
                 show_progress=DEFAULT_SHOW_PROGRESS):
     """Download in chunks, show progress, calculate checksums,
     and return the content.
     """
-    checksums = {}
-    if calculate_checksums:
-        for checksum_type in calculate_checksums:
-            try:
-                checksums[checksum_type] = hashlib.new(checksum_type)
-            except ValueError as value_error:
-                logging.warn(value_error)
-            #
-        #
-    #
+    checksums = get_checksums_mapping(calculate_checksums)
     logging.debug(MSG_DOWNLOADING.format(url))
     http_response = urllib2.urlopen(url)
     return download_chunks(http_response,
@@ -305,16 +316,8 @@ def save_to_file(url,
     # output file name '-' => direct output to stdout
     if output_file_name == DASH:
         return display_directly(url)
-    checksums = {}
-    if calculate_checksums:
-        for checksum_type in calculate_checksums:
-            try:
-                checksums[checksum_type] = hashlib.new(checksum_type)
-            except ValueError as value_error:
-                logging.warn(value_error)
-            #
-        #
     #
+    checksums = get_checksums_mapping(calculate_checksums)
     if not output_directory:
         output_directory = os.getcwd()
     if not output_file_name:
@@ -322,7 +325,7 @@ def save_to_file(url,
         output_file_name = output_path.split(SLASH)[LAST_INDEX]
     if not output_file_name:
         # URL path ends in a slash
-        output_file_name = 'index.html'
+        output_file_name = DIRECTORY_INDEX
     output_file_path = os.path.join(output_directory, output_file_name)
     #
     logging.debug(MSG_DOWNLOADING.format(url))
@@ -342,6 +345,7 @@ def get_command_line_options():
     option_parser = optparse.OptionParser(
         description=('Fetch a URL in chunks, display a progress bar'
                      ' and calculate checksums.'),
+        usage='%prog [options] url',
         version=__version__)
     option_parser.set_defaults(calculate_checksums=[],
                                output_path=None,
@@ -351,9 +355,10 @@ def get_command_line_options():
                              action='append',
                              dest='calculate_checksums',
                              metavar='CHECKSUM',
-                             help='calculate the given checksum types'
-                             ' (may be specified multiple times'
-                             ' for calculating multiple digests).')
+                             help='calculate the given checksum type,'
+                             ' e.g. MD5 or SHA1 (may be specified'
+                             ' multiple times to calculating different'
+                             ' digest types).')
     option_parser.add_option('-o', '--output',
                              action='store',
                              dest='output_path',
