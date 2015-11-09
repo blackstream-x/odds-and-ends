@@ -34,7 +34,7 @@ import urllib2
 import urlparse
 
 
-__version__ = '0.4.2'
+__version__ = '0.4.4'
 
 
 # Disable some pylint warnings
@@ -80,6 +80,9 @@ FS_PROGRESS_SIMPLE = ('PROGRESS | {received_bytes} bytes received,'
 FS_REPR = '{0}({1})'
 FS_SECONDS = '{0:3.1f}s'
 
+FULL_RATIO = 1.0
+FULL_PERCENT = 100
+
 # Progress bar items
 ITEM_COMPLETE = '#'
 ITEM_REMAINING = '-'
@@ -92,7 +95,7 @@ MODE_WRITE = 'w'
 MODE_WRITE_BINARY = 'wb'
 
 MSG_DOWNLOADING = 'Downloading {0!r} ...'
-MSG_DOWNLOAD_COMPLETE = 'Received {0} bytes in {1}'
+MSG_DOWNLOAD_COMPLETE = 'Received {0} bytes in {1} (~ {2} bytes/sec)'
 MSG_SAVED_TO = 'Saved {0} bytes to {1!r}'
 MSG_SCRIPT_FINISHED = 'Script finished. Returncode: {0}'
 
@@ -176,14 +179,16 @@ def display_progress(received_bytes,
     elapsed_time = timeit.default_timer() - start_time
     if total_bytes:
         ratio_complete = float(received_bytes) / total_bytes
+        if ratio_complete > FULL_RATIO:
+            ratio_complete = FULL_RATIO
         estimated_time_remaining = \
-            (1.0 - ratio_complete) / ratio_complete * elapsed_time
+            (FULL_RATIO - ratio_complete) / ratio_complete * elapsed_time
         bar_items_complete = int(ratio_complete * bar_width)
         bar_items_remaining = bar_width - bar_items_complete
         stream.write(FS_PROGRESS_BAR.format(
             bar_complete=bar_items_complete * ITEM_COMPLETE,
             bar_remaining=bar_items_remaining * ITEM_REMAINING,
-            percent_complete=100 * ratio_complete,
+            percent_complete=FULL_PERCENT * ratio_complete,
             elapsed_time=format_duration(elapsed_time),
             estimated_time_remaining=\
                 format_duration(estimated_time_remaining)))
@@ -253,7 +258,8 @@ def download_chunks(http_response,
         sys.stderr.write(NEWLINE)
     logging.debug(
         MSG_DOWNLOAD_COMPLETE.format(received_bytes,
-                                     format_duration(elapsed_time)))
+                                     format_duration(elapsed_time),
+                                     int(received_bytes / elapsed_time)))
     return SimpleNamespace(checksums=checksums,
                            content=EMPTY.join(saved_content),
                            received_bytes=received_bytes,
@@ -357,8 +363,8 @@ def get_command_line_options():
                              metavar='CHECKSUM',
                              help='calculate the given checksum type,'
                              ' e.g. MD5 or SHA1 (may be specified'
-                             ' multiple times to calculating different'
-                             ' digest types).')
+                             ' multiple times to calculate different'
+                             ' digest types at the same time).')
     option_parser.add_option('-o', '--output',
                              action='store',
                              dest='output_path',
