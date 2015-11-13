@@ -23,7 +23,9 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import base64
 import collections
+import getpass
 import hashlib
 import logging
 import optparse
@@ -34,17 +36,15 @@ import urllib2
 import urlparse
 
 
-__version__ = '0.4.4'
+__version__ = '0.5.1'
 
-
-# Disable some pylint warnings
-# pylint: disable=logging-format-interpolation
 
 #
 # Standard constants
 #
 
 BLANK = ' '
+COLON = ':'
 COMMA = ','
 COMMA_BLANK = COMMA + BLANK
 COMMENT_SIGN = '#'
@@ -66,14 +66,15 @@ DEFAULT_SHOW_PROGRESS = False
 DIRECTORY_INDEX = 'index.html'
 
 FS_ATTRIBUTE_ERROR = '{0!r} object has no attribute {1!r}'
+FS_BASIC_AUTH = 'Basic {0}'
 FS_CALCULATED_DIGEST = '{checksum_type} checksum: {hexdigest}'
 FS_HOURS = '{0}h'
 FS_MESSAGE = '%(levelname)-8s | %(message)s'
 FS_MINUTES = '{0}m'
 FS_PROGRESS_BAR = ('PROGRESS | {bar_complete}{bar_remaining}'
-                   ' | {percent_complete:5.1f}% complete'
-                   ' | elapsed: {elapsed_time}'
-                   ' | remaining: {estimated_time_remaining}'
+                   ' | {percent_complete:5.1f}%'
+                   ' | ET: {elapsed_time}'
+                   ' | ETA: {estimated_time_remaining}'
                    '       \r')
 FS_PROGRESS_SIMPLE = ('PROGRESS | {received_bytes} bytes received,'
                       ' elapsed time: {elapsed_time}\r')
@@ -96,8 +97,12 @@ MODE_WRITE_BINARY = 'wb'
 
 MSG_DOWNLOADING = 'Downloading {0!r} ...'
 MSG_DOWNLOAD_COMPLETE = 'Received {0} bytes in {1} (~ {2} bytes/sec)'
+MSG_ENTER_PASSWORD = 'Please enter password for {0!r}: '
+MSG_RECEIVED_RESPONSE = 'Received response after {0}'
 MSG_SAVED_TO = 'Saved {0} bytes to {1!r}'
 MSG_SCRIPT_FINISHED = 'Script finished. Returncode: {0}'
+MSG_WAITING_FOR_RESPONSE = ('Request sent, waiting for response'
+                            ' from {0!r} ...')
 
 RC_ERROR = 1
 RC_OK = 0
@@ -266,10 +271,23 @@ def download_chunks(http_response,
                            returncode=RC_OK)
 
 
-def display_directly(url):
-    """Download in chunks and display directly."""
+def get_http_response(url, additional_headers=None):
+    """Send an HTTP request with the given additional headers"""
+    http_request = urllib2.Request(url, headers=additional_headers)
+    logging.debug(MSG_WAITING_FOR_RESPONSE.format(
+        urlparse.urlparse(url).netloc))
+    start_time = timeit.default_timer()
+    http_response = urllib2.urlopen(http_request)
+    elapsed_time = timeit.default_timer() - start_time
+    logging.debug(MSG_RECEIVED_RESPONSE.format(
+        format_duration(elapsed_time)))
     logging.debug(MSG_DOWNLOADING.format(url))
-    http_response = urllib2.urlopen(url)
+    return http_response
+
+
+def display_directly(url, additional_headers=None):
+    """Download in chunks and display directly."""
+    http_response = get_http_response(url, additional_headers)
     result = download_chunks(http_response,
                              output_file=sys.stdout,
                              show_progress=False)
@@ -277,13 +295,13 @@ def display_directly(url):
     return result
 
 
-def get_checksums_mapping(checksums_list):
+def get_checksums_mapping(checksums_sequence):
     """Return a mapping of hash objects from the given
     checksum types list
     """
     checksums_mapping = {}
-    if checksums_list:
-        for checksum_type in checksums_list:
+    try:
+        for checksum_type in checksums_sequence:
             try:
                 checksums_mapping[checksum_type.upper()] = \
                     hashlib.new(checksum_type.lower())
@@ -291,19 +309,21 @@ def get_checksums_mapping(checksums_list):
                 logging.warn(value_error)
             #
         #
+    except TypeError:
+        pass
     #
     return checksums_mapping
 
 
 def get_content(url,
+                additional_headers=None,
                 calculate_checksums=None,
                 show_progress=DEFAULT_SHOW_PROGRESS):
     """Download in chunks, show progress, calculate checksums,
     and return the content.
     """
     checksums = get_checksums_mapping(calculate_checksums)
-    logging.debug(MSG_DOWNLOADING.format(url))
-    http_response = urllib2.urlopen(url)
+    http_response = get_http_response(url, additional_headers)
     return download_chunks(http_response,
                            checksums=checksums,
                            output_file=None,
@@ -312,37 +332,26 @@ def get_content(url,
 
 
 def save_to_file(url,
+                 additional_headers=None,
                  calculate_checksums=None,
-                 output_directory=None,
-                 output_file_name=None,
+                 output_file_path=None,
                  show_progress=DEFAULT_SHOW_PROGRESS):
     """Download in chunks, show progress, calculate checksums,
     and save to the target directory.
     """
-    # output file name '-' => direct output to stdout
-    if output_file_name == DASH:
-        return display_directly(url)
+    if not output_file_path:
+        return display_directly(url, additional_headers)
     #
     checksums = get_checksums_mapping(calculate_checksums)
-    if not output_directory:
-        output_directory = os.getcwd()
-    if not output_file_name:
-        output_path = urlparse.urlparse(url).path
-        output_file_name = output_path.split(SLASH)[LAST_INDEX]
-    if not output_file_name:
-        # URL path ends in a slash
-        output_file_name = DIRECTORY_INDEX
-    output_file_path = os.path.join(output_directory, output_file_name)
-    #
-    logging.debug(MSG_DOWNLOADING.format(url))
-    http_response = urllib2.urlopen(url)
+    http_response = get_http_response(url, additional_headers)
     with open(output_file_path, MODE_WRITE_BINARY) as output_file:
         result = download_chunks(http_response,
                                  checksums=checksums,
                                  output_file=output_file,
                                  show_progress=show_progress)
-    logging.debug(MSG_SAVED_TO.format(result.received_bytes,
-                                      output_file_path))
+    #
+    logging.info(MSG_SAVED_TO.format(result.received_bytes,
+                                     output_file_path))
     return result
 
 
@@ -356,6 +365,7 @@ def get_command_line_options():
     option_parser.set_defaults(calculate_checksums=[],
                                output_path=None,
                                show_progress=DEFAULT_SHOW_PROGRESS,
+                               user=None,
                                verbose=False)
     option_parser.add_option('-c', '--checksum', '--calculate-checksum',
                              action='append',
@@ -373,11 +383,68 @@ def get_command_line_options():
                              action='store_true',
                              dest='show_progress',
                              help='show progress while downloading.')
+    option_parser.add_option('-u', '--user', '--http-user',
+                             action='store',
+                             dest='http_user',
+                             help='authenticate as HTTP_USER.')
     option_parser.add_option('-v', '--verbose',
                              action='store_true',
                              dest='verbose',
                              help='print debugging messages.')
     return option_parser.parse_args()
+
+
+def determine_output_file_path(output_path,
+                               url,
+                               default_file_name=DIRECTORY_INDEX):
+    """Determine output directory and file name
+    from the given output path parameter.
+    If no directory could be determined from it,
+    use the current working directory.
+    If no file name could be determined from it,
+    derive the file name from the URL (in case
+    the URL ends in a slash, set <default_file_name>
+    as the file name.
+    Return the full file path.
+    """
+    output_file_name = None
+    try:
+        if os.path.isdir(output_path):
+            output_directory = output_path
+        else:
+            output_directory, output_file_name = \
+                os.path.split(output_path)
+            #
+        #
+    except TypeError:
+        # output_path is None
+        output_directory = None
+    #
+    if not output_directory:
+        output_directory = os.getcwd()
+    if not output_file_name:
+        url_path = urlparse.urlparse(url).path
+        if url_path.endswith(SLASH):
+            output_file_name = default_file_name
+        else:
+            output_file_name = url_path.split(SLASH)[LAST_INDEX]
+        #
+    #
+    return os.path.join(output_directory, output_file_name)
+
+
+def make_basic_auth(http_user):
+    """Ask for the HTTP user's password and return a dict
+    consisting of the HTTP Basic authentication header
+    """
+    http_password = getpass.getpass(
+        FS_MESSAGE % dict(
+            levelname='QUESTION',
+            message=MSG_ENTER_PASSWORD.format(http_user)))
+    return dict(
+        Authorization=FS_BASIC_AUTH.format(
+            base64.b64encode(COLON.join((http_user, http_password)))))
+    #
 
 
 def main(command_line_options):
@@ -386,23 +453,26 @@ def main(command_line_options):
     if not options.verbose:
         logging.getLogger(None).setLevel(logging.INFO)
     #
-    output_file_name = None
-    if options.output_path:
-        if os.path.isdir(options.output_path):
-            output_directory = options.output_path
-        else:
-            output_directory, output_file_name = \
-                os.path.split(options.output_path)
-            #
-        #
+    url = arguments[FIRST_INDEX]
+    #
+    # Determine output file path.
+    # If ouput path '-' was given, the file contents
+    # will be written to stdout
+    if options.output_path == DASH:
+        output_file_path = None
     else:
-        output_directory = None
+        output_file_path = determine_output_file_path(options.output_path,
+                                                      url)
+    #
+    additional_headers = None
+    if options.http_user:
+        additional_headers = make_basic_auth(options.http_user)
     #
     download_result = save_to_file(
-        arguments[FIRST_INDEX],
+        url,
+        additional_headers=additional_headers,
         calculate_checksums=options.calculate_checksums,
-        output_directory=output_directory,
-        output_file_name=output_file_name,
+        output_file_path=output_file_path,
         show_progress=options.show_progress)
     #
     for checksum_type, single_checksum in download_result.checksums.items():
