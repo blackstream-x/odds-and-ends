@@ -36,7 +36,7 @@ import urllib2
 import urlparse
 
 
-__version__ = '0.5.1'
+__version__ = '0.5.2'
 
 
 #
@@ -273,7 +273,8 @@ def download_chunks(http_response,
 
 def get_http_response(url, additional_headers=None):
     """Send an HTTP request with the given additional headers"""
-    http_request = urllib2.Request(url, headers=additional_headers)
+    http_request = urllib2.Request(url,
+                                   headers=additional_headers or {})
     logging.debug(MSG_WAITING_FOR_RESPONSE.format(
         urlparse.urlparse(url).netloc))
     start_time = timeit.default_timer()
